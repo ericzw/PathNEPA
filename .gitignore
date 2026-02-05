@@ -1,0 +1,12 @@
+*.h5
+*.pt
+*.pth
+*.bin
+*.npy
+*.safetensors
+output*/
+checkpoint*/
+wandb/
+__pycache__/
+.idea/
+.DS_Store
