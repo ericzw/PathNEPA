@@ -21,6 +21,20 @@ Next-Embedding Predictive Autoregression. An image is split into patches and emb
 }
 ```
 
+## TODO List
+
+- [ ] 基础特征提取：提取所有WSI的patches features并保存坐标信息
+- [ ] 离线数据生成：编写脚本预先根据坐标裁剪并保存32x32及全图的feature文件为独立数据集 (这一步需要考虑如何实现，特别的，对于被mask的位置的处理)
+- [ ] Dataset适配：实现新的Dataset类以直接读取离线预处理好的特征文件
+- [ ] Embedding层修改：将PatchEmbed替换为Linear Projection以适配特征输入
+- [ ] 位置编码修改：PosEmbed修改以适配变长输入
+- [ ] 训练流程配置：跑通基于feature的流程
+- [ ] 第一轮训练：基于32x32数据进行模型预训练
+- [ ] 第一轮测试：基于32x32训练得到的model进行第一次downstream测试(subtyping任务)，以检查训练是否正常
+- [ ] 第二轮训练：基于全图数据进行模型预训练
+- [ ] 第二轮测试：基于全图数据训练得到的model进行第二次downstream测试
+- [ ] 后续调优
+
 
 ## Environment
 
