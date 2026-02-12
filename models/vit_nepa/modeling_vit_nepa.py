@@ -97,23 +97,32 @@ class ViTNepaRopePositionEmbedding(nn.Module):
         inv_freq = 1 / self.base ** torch.arange(0, 1, 4 / self.head_dim, dtype=torch.float32)  # (head_dim / 4,)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
-    def forward(self, pixel_values: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
-        # [MODIFIED] 如果没有图片输入 (pixel_values is None)，说明是直接输入特征
-        # 此时无法计算 2D 空间位置，直接返回 None，Attention 层会处理
-        if pixel_values is None:
+    def forward(self, pixel_values: Optional[torch.Tensor] = None, grid_size: Optional[int] = None) -> tuple[torch.Tensor, torch.Tensor]:
+        # 1. 确定空间维度和设备信息
+        if pixel_values is not None:
+            # 图像模式
+            _, _, height, width = pixel_values.shape
+            num_patches_h = height // self.config.patch_size
+            num_patches_w = width // self.config.patch_size
+            current_device = pixel_values.device
+            current_dtype = pixel_values.dtype
+        elif grid_size is not None:
+            # 特征网格模式 (例如 32)
+            num_patches_h = grid_size
+            num_patches_w = grid_size
+            current_device = self.inv_freq.device 
+            current_dtype = torch.float32 # 特征训练通常使用 float32 或从 config 获取
+        else:
             return None, None
 
-        _, _, height, width = pixel_values.shape
-        num_patches_h = height // self.config.patch_size
-        num_patches_w = width // self.config.patch_size
+        # 2. 计算位置坐标
+        device_type = current_device.type if isinstance(current_device.type, str) and current_device.type != "mps" else "cpu"
 
-        device = pixel_values.device
-        device_type = device.type if isinstance(device.type, str) and device.type != "mps" else "cpu"
-
-        with torch.autocast(device_type=device_type, enabled=False):  # Force float32
+        with torch.autocast(device_type=device_type, enabled=False):  # 强制 float32 保证精度
             patch_coords = get_patches_center_coordinates(
-                num_patches_h, num_patches_w, dtype=torch.float32, device=device
+                num_patches_h, num_patches_w, dtype=torch.float32, device=current_device
             )
+            
             if self.training:
                 patch_coords = augment_patches_center_coordinates(
                     patch_coords,
@@ -122,6 +131,8 @@ class ViTNepaRopePositionEmbedding(nn.Module):
                     rescale=self.config.pos_embed_rescale,
                 )
 
+            # 3. 计算旋转角度 (Rotary angles)
+            # angles shape: (Num_Patches, Head_Dim/4)
             angles = 2 * math.pi * patch_coords[:, :, None] * self.inv_freq[None, None, :]
             angles = angles.flatten(1, 2)
             angles = angles.tile(2)
@@ -129,8 +140,8 @@ class ViTNepaRopePositionEmbedding(nn.Module):
             cos = torch.cos(angles)
             sin = torch.sin(angles)
 
-        dtype = pixel_values.dtype
-        return cos.to(dtype=dtype), sin.to(dtype=dtype)
+        # 4. 转换回模型所需的 dtype 
+        return cos.to(dtype=current_dtype), sin.to(dtype=current_dtype)
 
 
 def rotate_half(x):
@@ -643,8 +654,13 @@ class ViTNepaModel(ViTNepaPreTrainedModel):
                 bool_masked_pos=bool_masked_pos,
                 interpolate_pos_encoding=interpolate_pos_encoding
             )
-            # 特征模式下跳过 RoPE (或者需要另外实现 1D RoPE)
-            position_embeds = self.rope_embeddings(pixel_values=None) 
+            position_embeds = self.rope_embeddings(pixel_values=None,
+                                                   grid_size=32) 
+            if position_embeds[0] is not None:
+                position_embeds = (
+                    position_embeds[0].to(input_features.device), 
+                    position_embeds[1].to(input_features.device)
+                )
 
         else:
             # 原始图片模式
@@ -749,5 +765,73 @@ class ViTNepaForImageClassification(ViTNepaPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+# ==========================================
+# 新增：ViTNepaForPreTraining 类 (请添加到文件末尾)
+# ==========================================
+class ViTNepaForPreTraining(ViTNepaPreTrainedModel):
+    def __init__(self, config: ViTNepaConfig):
+        super().__init__(config)
+        self.vit_nepa = ViTNepaModel(config, use_mask_token=True)
+        
+        self.input_feat_dim = getattr(config, "input_feat_dim", 1536)
+        
+        # 解码头 (Decoder Head)：从 hidden_size 预测回原始特征维度
+        # 这是一个简单的 MLP
+        self.decoder = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.GELU(),
+            nn.Linear(config.hidden_size, self.input_feat_dim)
+        )
 
-__all__ = ["ViTNepaForImageClassification", "ViTNepaModel", "ViTNepaPreTrainedModel"]
+        self.post_init()
+
+    def forward(
+        self,
+        pixel_values: Optional[torch.Tensor] = None,
+        input_features: Optional[torch.Tensor] = None,
+        bool_masked_pos: Optional[torch.BoolTensor] = None,
+        label_features: Optional[torch.Tensor] = None, # Dataset 返回的原始特征
+        **kwargs,
+    ) -> dict:
+        
+        outputs = self.vit_nepa(
+            pixel_values=pixel_values,
+            input_features=input_features,
+            bool_masked_pos=bool_masked_pos,
+            **kwargs,
+        )
+
+        sequence_output = outputs.last_hidden_state
+        # sequence_output: (Batch, 1 + Num_Patches, Hidden) -> 注意有一个 CLS token
+
+        # 移除 CLS token，只取 patch 的部分
+        patch_output = sequence_output[:, 1:, :] 
+        
+        # 预测特征
+        prediction = self.decoder(patch_output) # (Batch, Num_Patches, Feat_Dim)
+
+        loss = None
+        if label_features is not None and bool_masked_pos is not None:
+            # 只计算被 Mask 掉的位置的 Loss
+            # bool_masked_pos: (Batch, Num_Patches)
+            
+            # 展平以便计算
+            mask_flat = bool_masked_pos.view(-1)
+            pred_flat = prediction.reshape(-1, self.input_feat_dim)
+            label_flat = label_features.reshape(-1, self.input_feat_dim)
+            
+            # MSE Loss
+            loss_fct = nn.MSELoss()
+            # 只取 mask 为 True 的部分计算 loss
+            if mask_flat.sum() > 0:
+                loss = loss_fct(pred_flat[mask_flat], label_flat[mask_flat])
+            else:
+                loss = torch.tensor(0.0, device=prediction.device, requires_grad=True)
+
+        return {
+            "loss": loss,
+            "prediction": prediction,
+            "hidden_states": outputs.hidden_states,
+        }
+
+__all__ = ["ViTNepaForImageClassification", "ViTNepaModel", "ViTNepaPreTrainedModel", "ViTNepaForPreTraining"]
