@@ -10,3 +10,4 @@ wandb/
 __pycache__/
 .idea/
 .DS_Store
+output_pretrain_32x32_ema_1/

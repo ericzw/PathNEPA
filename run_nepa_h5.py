@@ -3,7 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
-
+import glob
 import torch
 import transformers
 from transformers import (
@@ -15,12 +15,11 @@ from transformers import (
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
-from dataset import OfflineNepaDataset
 # === 导入你自己定义的模块 ===
 # 假设你把模型代码保存为了 modeling_vit_nepa.py
 from models.vit_nepa import ViTNepaForPreTraining, ViTNepaConfig
 # 假设你把修复好的 Dataset 保存为了 dataset.py
-from dataset import H5FeatureGridDataset 
+from models.dataset import PathNEPAFeatureDataset
 
 # 检查版本
 check_min_version("4.28.0")
@@ -190,7 +189,23 @@ class DataArguments:
         default=0.1,
         metadata={"help": "验证集切分比例"}
     )
-
+def collate_fn(examples):
+    # 将 B 和 64 融合
+    batch_features = torch.stack([ex["input_features"] for ex in examples]) # (B, 64, 1024, 1536)
+    batch_labels = torch.stack([ex["label_features"] for ex in examples])
+    
+    B, num_crops, seq_len, D = batch_features.shape
+    
+    res = {
+        "input_features": batch_features.view(B * num_crops, seq_len, D),
+        "label_features": batch_labels.view(B * num_crops, seq_len, D)
+    }
+    
+    if "bool_masked_pos" in examples[0]:
+        batch_mask = torch.stack([ex["bool_masked_pos"] for ex in examples])
+        res["bool_masked_pos"] = batch_mask.view(B * num_crops, seq_len)
+        
+    return res
 # =============================================================================
 # 3. 主函数
 # =============================================================================
@@ -214,12 +229,25 @@ def main():
 
     # 2. 加载 Dataset 
     logger.info(f"Loading H5 data from {data_args.h5_dir}...")
-    full_dataset = OfflineNepaDataset(
-        data_dir=data_args.h5_dir,
-        # feature_dim=model_args.input_feat_dim, # 传入 1536
+
+    # 1. 递归查找文件夹下所有的 .h5 文件，生成一个列表
+    h5_files = glob.glob(os.path.join(data_args.h5_dir, "**", "*.h5"), recursive=True)
+    
+    # 加个保险，防止路径填错导致空列表
+    if len(h5_files) == 0:
+        raise FileNotFoundError(f"错误：在 {data_args.h5_dir} 及其子文件夹下没有找到任何 .h5 文件！")
+    
+    logger.info(f"成功找到 {len(h5_files)} 个 .h5 文件，正在初始化 Dataset...")
+
+    # 2. 把文件列表传给 h5_file_list
+    full_dataset = PathNEPAFeatureDataset(
+        h5_file_list=h5_files,       # <--- 注意这里参数名是 h5_file_list，传入的是刚才搜出来的列表
+        num_crops=2,                # 每次随机切 64 张图 (觉得显存不够可以改小，比如 16, 32)
+        crop_size=32,                # 32x32 的特征图
+        valid_ratio=0.5,             # 保证有效组织 >= 50%
         mask_ratio=data_args.mask_ratio
     )
-    
+
     # 划分 Train / Val
     val_size = int(len(full_dataset) * data_args.val_ratio)
     train_size = len(full_dataset) - val_size
@@ -245,14 +273,11 @@ def main():
     trainer = EnhancedTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        # EnhancedTrainer 特有参数
-        embed_lr=model_args.embed_lr, # 如果命令行没传，就是 None
-        use_ema=True,                 # 开启 EMA
-        ema_decay=0.9999,             # 设置衰减
+        train_dataset=full_dataset if training_args.do_train else None,
+        eval_dataset=val_dataset if training_args.do_eval else None,
+        data_collator=collate_fn,  
+        embed_lr=model_args.embed_lr,
     )
-
     # 5. 开始训练
     if training_args.resume_from_checkpoint:
         logger.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
