@@ -19,8 +19,9 @@ from transformers.utils.versions import require_version
 # 假设你把模型代码保存为了 modeling_vit_nepa.py
 from models.vit_nepa import ViTNepaForPreTraining, ViTNepaConfig
 # 假设你把修复好的 Dataset 保存为了 dataset.py
-from models.dataset import PathNEPAFeatureDataset
-
+# from models.dataset import PathNEPAFeatureDataset
+# # # from models.dataset import  FastOfflineMILDataset as PathNEPAFeatureDataset
+from models.dataset import OfflinePretrainDataset as PathNEPAFeatureDataset
 # 检查版本
 check_min_version("4.28.0")
 logger = logging.getLogger(__name__)
@@ -166,6 +167,9 @@ class ModelArguments:
         default="google/vit-base-patch16-224", 
         metadata={"help": "基础配置文件 (用于初始化架构参数)"}
     )
+    model_name_or_path: str = field(
+        default=None, 
+        metadata={"help": "加载官方预训练权重的路径"})
     input_feat_dim: int = field(
         default=1536, 
         metadata={"help": "H5 文件中的特征维度 (ResNet=1024, UNI=1536)"}
@@ -173,6 +177,10 @@ class ModelArguments:
     embed_lr: Optional[float] = field(
         default=None,
         metadata={"help": "特征投影层的专属学习率 (通常比主干网络小一点)"}
+    )
+    freeze_epochs: int = field(
+        default=2, 
+        metadata={"help": "预热阶段冻结主干的 Epoch 数量"}
     )
 
 @dataclass
@@ -242,7 +250,7 @@ def main():
     # 2. 把文件列表传给 h5_file_list
     full_dataset = PathNEPAFeatureDataset(
         h5_file_list=h5_files,       # <--- 注意这里参数名是 h5_file_list，传入的是刚才搜出来的列表
-        num_crops=2,                # 每次随机切 64 张图 (觉得显存不够可以改小，比如 16, 32)
+        num_crops=64,                # 每次随机切 64 张图 (觉得显存不够可以改小，比如 16, 32)
         crop_size=32,                # 32x32 的特征图
         valid_ratio=0.5,             # 保证有效组织 >= 50%
         mask_ratio=data_args.mask_ratio
@@ -260,34 +268,112 @@ def main():
     # 3. 初始化模型
     # 加载基础配置
     config = ViTNepaConfig.from_pretrained(model_args.model_config_name)
-    
-    # === 关键修改：注入特征维度 ===
     config.input_feat_dim = model_args.input_feat_dim  # 1536
-    # 初始化预训练模型
-    model = ViTNepaForPreTraining(config)
+    if model_args.model_name_or_path is not None:
+        logger.info(f"🚀 正在加载官方预训练底座: {model_args.model_name_or_path}")
+        model = ViTNepaForPreTraining.from_pretrained(
+            model_args.model_name_or_path,
+            config=config,
+            ignore_mismatched_sizes=True # 容忍 Decoder 未初始化的维度警告
+        )
+    else:
+        logger.info("🌱 未指定权重，从头开始随机初始化模型")
+        model = ViTNepaForPreTraining(config)
+
     
     # 打印模型结构确认一下
     logger.info(f"Model initialized. Input Feature Dim: {config.input_feat_dim}")
 
-    # 4. 使用 EnhancedTrainer 启动训练
-    trainer = EnhancedTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=full_dataset if training_args.do_train else None,
-        eval_dataset=val_dataset if training_args.do_eval else None,
-        data_collator=collate_fn,  
-        embed_lr=model_args.embed_lr,
-    )
-    # 5. 开始训练
-    if training_args.resume_from_checkpoint:
-        logger.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
-        trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
-    else:
-        trainer.train()
+    # =============================================================================
+    # 4. 进阶：两阶段训练 (LP-FT 策略) 与 EnhancedTrainer 初始化
+    # =============================================================================
+    freeze_epochs = model_args.freeze_epochs
 
-    # 6. 保存最终结果
-    trainer.save_model()
-    trainer.save_state()
+    if training_args.do_train:
+        # 判断：如果总 Epoch 数大于冻结的 Epoch 数，才进行两阶段训练
+        if freeze_epochs > 0 and (training_args.num_train_epochs > freeze_epochs):
+            logger.info("="*60)
+            logger.info(f"❄️ [第一阶段] 冻结官方预训练主干，先让 Decoder 和特征降维层预热 {freeze_epochs} 个 Epoch...")
+            logger.info("="*60)
+
+            # 1. 冻结 Encoder 主干
+            for param in model.vit_nepa.parameters():
+                param.requires_grad = False
+            
+            # 2. 强制解冻新初始化的组件 (投影层和 mask_token)
+            for param in model.vit_nepa.embeddings.feature_projection.parameters():
+                param.requires_grad = True
+            if hasattr(model.vit_nepa.embeddings, 'mask_token'):
+                model.vit_nepa.embeddings.mask_token.requires_grad = True
+
+            # 备份原始的 epochs
+            total_epochs = training_args.num_train_epochs
+            training_args.num_train_epochs = freeze_epochs
+
+            # 实例化第一阶段的 EnhancedTrainer
+            trainer_phase1 = EnhancedTrainer(
+                model=model,
+                args=training_args,
+                # ⚠️ 修复了你原本代码里把 full_dataset 传进去的 Bug，改为 train_dataset
+                train_dataset=train_dataset, 
+                eval_dataset=val_dataset if training_args.do_eval else None,
+                data_collator=collate_fn,  
+                embed_lr=model_args.embed_lr,
+            )
+            
+            # 第一阶段只做预热，通常不建议直接 resume
+            trainer_phase1.train()
+
+            logger.info("="*60)
+            logger.info("🔥 [第二阶段] 新手预热完毕！全面解冻老手主干，开始端到端协同微调...")
+            logger.info("="*60)
+
+            # 3. 全面解冻老手！
+            for param in model.vit_nepa.parameters():
+                param.requires_grad = True
+                
+            # 恢复剩余的 Epoch 数量 (比如总共 10 个，预热了 2 个，剩下跑 8 个)
+            training_args.num_train_epochs = total_epochs - freeze_epochs
+
+            # 💥 极其关键：必须重新实例化第二阶段的 EnhancedTrainer！
+            # 因为你的 EnhancedTrainer 重写了 create_optimizer()，
+            # 只有重新实例化并调用 train()，它才会把刚刚解冻的 Encoder 参数重新加入到优化器中！
+            trainer_phase2 = EnhancedTrainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=val_dataset if training_args.do_eval else None,
+                data_collator=collate_fn,  
+                embed_lr=model_args.embed_lr,
+            )
+            
+            trainer_phase2.train()
+            
+            # 5. 保存最终结果
+            trainer_phase2.save_model()
+            trainer_phase2.save_state()
+
+        else:
+            # 如果不满足两阶段条件（比如 freeze_epochs 设为 0），走标准单阶段
+            logger.info("🌱 进行标准的单阶段全参训练...")
+            trainer = EnhancedTrainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=val_dataset if training_args.do_eval else None,
+                data_collator=collate_fn,  
+                embed_lr=model_args.embed_lr,
+            )
+            
+            if training_args.resume_from_checkpoint:
+                logger.info(f"Resuming from checkpoint: {training_args.resume_from_checkpoint}")
+                trainer.train(resume_from_checkpoint=training_args.resume_from_checkpoint)
+            else:
+                trainer.train()
+
+            # 5. 保存最终结果
+            trainer.save_model()
+            trainer.save_state()
 
 if __name__ == "__main__":
     main()
