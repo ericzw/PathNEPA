@@ -7,6 +7,8 @@ import time
 import h5py
 import torch
 import numpy as np
+import glob
+import os
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
@@ -149,31 +151,16 @@ class PathNEPAFeatureDataset(Dataset):
             "bool_masked_pos": bool_masked_pos                        # (64, 1024)
         }
 
-class FastOfflineMILDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, label2id, file_to_label_dict, num_crops=64, mask_ratio=0.4):
-        # 依然读取 .h5 文件
-        self.h5_files = glob.glob(os.path.join(root_dir, "**", "*.h5"), recursive=True)
-        self.label2id = label2id
+class FastOfflineMILDataset(Dataset):
+    """
+    专为 Downstream Subtyping (5-Fold) 打造。
+    直接接收匹配好的文件路径列表和标签，彻底杜绝硬盘扫盘造成的启动卡死。
+    """
+    def __init__(self, file_paths, labels, num_crops=64, mask_ratio=0.0):
+        self.files = file_paths
+        self.labels = labels
         self.num_crops = num_crops
         self.mask_ratio = mask_ratio
-        
-        self.files = []
-        self.labels = []
-        
-        for f in self.h5_files:
-            basename = os.path.basename(f)
-            file_key = basename.replace(".h5", "") 
-            
-            matched_label = file_to_label_dict.get(file_key)
-            if matched_label is None:
-                for k in file_to_label_dict.keys():
-                    if k in basename: matched_label = file_to_label_dict[k]; break
-            
-            if matched_label is not None and str(matched_label) in self.label2id:
-                self.files.append(f)
-                self.labels.append(self.label2id[str(matched_label)])
-
-        logger.info(f"⚡ 成功挂载 {len(self.files)} 个纯净版离线 H5 文件")
 
     def __len__(self):
         return len(self.files)
@@ -182,35 +169,35 @@ class FastOfflineMILDataset(torch.utils.data.Dataset):
         file_path = self.files[idx]
         label = self.labels[idx]
         
-        # 1. 极速读取离线处理好的 H5 特征
         try:
             with h5py.File(file_path, 'r', swmr=True, libver='latest') as f:
-                # 直接全部读取到内存，因为经过筛选，现在的数据量非常小
-                all_crops_np = f['features'][:] 
+                dataset = f['features']
+                M = dataset.shape[0]
                 
-            all_crops = torch.from_numpy(all_crops_np).float()
-            M = all_crops.shape[0]
-            
-            # 2. 随机采样 64 个
-            if M >= self.num_crops:
-                indices = torch.randperm(M)[:self.num_crops]
-            else:
-                indices = torch.randint(0, M, (self.num_crops,))
+                if M >= self.num_crops:
+                    indices = np.random.choice(M, self.num_crops, replace=False)
+                else:
+                    indices = np.random.choice(M, self.num_crops, replace=True)
                 
-            input_features = all_crops[indices] 
-            
-            # 3. 动态生成 Mask
-            bool_masked_pos = torch.zeros((self.num_crops, 1024), dtype=torch.bool)
+                sorted_indices = np.sort(indices)
+                sampled_crops = dataset[sorted_indices, ...]
+                
+                if M >= self.num_crops:
+                    np.random.shuffle(sampled_crops)
+                
+                input_features = torch.from_numpy(sampled_crops).float()
+                
+            bool_masked_pos = torch.zeros((self.num_crops, input_features.shape[1]), dtype=torch.bool)
             if self.mask_ratio > 0:
                 for i in range(self.num_crops):
-                    valid_locs = torch.where(input_features[i].abs().sum(dim=-1) > 0)[0]
+                    valid_locs = torch.where(input_features[i, :, 0] != 0)[0]
                     num_mask = int(len(valid_locs) * self.mask_ratio)
                     if num_mask > 0:
                         masked_idx = valid_locs[torch.randperm(len(valid_locs))[:num_mask]]
                         bool_masked_pos[i, masked_idx] = True
 
         except Exception as e:
-            logger.error(f"读取异常 {file_path}: {e}")
+            # print(f"❌ 读取异常 {file_path}: {e}") # 生产环境建议注释，防日志刷屏
             input_features = torch.zeros((self.num_crops, 1024, 1536)).float()
             bool_masked_pos = torch.zeros((self.num_crops, 1024)).bool()
 
@@ -221,8 +208,6 @@ class FastOfflineMILDataset(torch.utils.data.Dataset):
             "labels": label
         }
 
-
-
 # ==============================================================================
 # 1. 新增：专为离线特征打造的极速预训练 Dataset
 # ==============================================================================
@@ -232,7 +217,7 @@ class OfflinePretrainDataset(Dataset):
     直接读取榨汁好的纯净版 .h5 特征，无需任何坐标计算和图像切分！
     """
     # ⚠️ 加入 **kwargs 神器，完美吸收掉 run_nepa_h5.py 传过来的所有多余参数(如 valid_ratio)，绝不报错！
-    def __init__(self, h5_file_list, num_crops=64, mask_ratio=0.4, **kwargs):
+    def __init__(self, h5_file_list, num_crops=32, mask_ratio=0.4, **kwargs):
         self.h5_files = h5_file_list
         self.num_crops = num_crops
         self.mask_ratio = mask_ratio

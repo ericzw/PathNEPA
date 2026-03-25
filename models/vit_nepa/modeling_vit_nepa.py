@@ -173,10 +173,6 @@ class ViTNepaEmbeddings(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.patch_size = config.patch_size
         self.config = config
-
-        # [MODIFIED] 新增：特征投影层
-        # 如果输入的 .h5 特征维度是 1536 (UNI)，而模型 hidden_size 是 1024，需要投影
-        # 我们假设 config 中有一个 input_feat_dim，如果没有默认为 1536
         input_feat_dim = getattr(config, "input_feat_dim", 1536) 
         self.feature_projection = nn.Sequential(
                                     # 第一层：将输入特征映射到中间维度

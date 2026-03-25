@@ -1,6 +1,6 @@
 import os
 
-root_dir = '/data2/mengzibing/medicine/datasets/dataset_o'
+root_dir = '/data2/mengzibing/mydisk/1_5t/dataset/TCGA'
 
 print(f"🚀 开始强制穿透扫描 (开启 followlinks): {root_dir}")
 print("-" * 60)
@@ -13,7 +13,7 @@ else:
     for root, dirs, files in os.walk(root_dir, followlinks=True):
         count_in_dir = 0
         for file in files:
-            if file.lower().endswith('.h5'):
+            if file.lower().endswith('.svs'):
                 count_in_dir += 1
                 
         if count_in_dir > 0:
@@ -48,3 +48,12 @@ print(f"🎉 最终总计: {grand_total} 个 .h5 文件。")
 # ✅ 在 PAAD 中找到: 203 个
 # ------------------------------------------------------------
 # 🎉 最终总计: 12331 个 .h5 文件。
+
+# ✅ 在 BLCA 中找到: 926 个
+# ✅ 在 BRCA 中找到: 3112 个
+# ✅ 在 LUAD 中找到: 1608 个
+# ✅ 在 PAAD 中找到: 253 个
+# ✅ 在 STAD 中找到: 1197 个
+# ✅ 在 UCEC 中找到: 1371 个
+# ------------------------------------------------------------
+# 🎉 最终总计: 8467 个 .h5 文件。

@@ -5,7 +5,7 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=0            # 指定使用的 GPU 卡号 (例如 "0,1,2,3" 多卡)
+export CUDA_VISIBLE_DEVICES=3            # 指定使用的 GPU 卡号 (例如 "0,1,2,3" 多卡)
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
@@ -13,7 +13,7 @@ export CUDA_VISIBLE_DEVICES=0            # 指定使用的 GPU 卡号 (例如 "0
 ROOT_DIR="/data2/mengzibing/medicine"
 CODE_DIR="${ROOT_DIR}/PathNEPA"
 DATA_DIR="${ROOT_DIR}/datasets/dataset_offline/Sub-typing"
-OUTPUT_DIR="./output_pretrain_32x32_ema_2"
+OUTPUT_DIR="./output_pretrain_32x32_ema_6"
 LOG_FILE="${OUTPUT_DIR}/train.log"
 
 # ==========================================
@@ -26,9 +26,9 @@ MASK_RATIO=0.4                                       # MAE 遮掩比例
 # ==========================================
 # 🚀 第四部分：核心训练超参数
 # ==========================================
-EPOCHS=50                                # 总训练轮数
+EPOCHS=800                                # 总训练轮数
 FREEZE_EPOCHS=2                          # 前几个 Epoch 冻结主干
-BATCH_SIZE=1                             # 训练 Batch Size (大卡可改成 16/32/64)
+BATCH_SIZE=3                             # 训练 Batch Size (大卡可改成 16/32/64)
 EVAL_BATCH_SIZE=2                        # 验证 Batch Size
 LEARNING_RATE=1.5e-4                     # 主干学习率 (Base LR)
 EMBED_LR=2.0e-4                          # 投影层专属学习率 (Head/Embed LR)
