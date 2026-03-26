@@ -685,21 +685,16 @@ class ViTNepaModel(ViTNepaPreTrainedModel):
 class ViTNepaForImageClassification(ViTNepaPreTrainedModel):
     def __init__(self, config: ViTNepaConfig):
         super().__init__(config)
-        self.add_pooling_layer = config.add_pooling_layer
-        self.num_image_tokens = (config.image_size // config.patch_size) ** 2
         self.num_labels = config.num_labels
         self.vit_nepa = ViTNepaModel(config)
-        self.pooler = lambda hidden_states: hidden_states.mean(dim=1) if config.add_pooling_layer else None
-        self.fc_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps) if config.add_pooling_layer else None
         self.classifier = nn.Linear(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
         self.post_init()
 
     @can_return_tuple
-     
     def forward(
         self,
         pixel_values: Optional[torch.Tensor] = None,
-        input_features: Optional[torch.Tensor] = None, # [MODIFIED] Added
+        input_features: Optional[torch.Tensor] = None,
         head_mask: Optional[torch.Tensor] = None,
         output_attentions: Optional[bool] = None,
         labels: Optional[torch.Tensor] = None,
@@ -707,29 +702,22 @@ class ViTNepaForImageClassification(ViTNepaPreTrainedModel):
         **kwargs,
     ) -> ImageClassifierOutput:
         
-        outputs: BaseModelOutputWithEmbedding = self.vit_nepa(
+        outputs = self.vit_nepa(
             pixel_values=pixel_values,
-            input_features=input_features, # Pass it down
+            input_features=input_features, 
             head_mask=head_mask,
             output_attentions=output_attentions,
             interpolate_pos_encoding=interpolate_pos_encoding,
             **kwargs,
         )
 
+
         sequence_output = outputs.last_hidden_state
-        if self.add_pooling_layer:
-            # [MODIFIED] 如果是 input_features，我们没有固定的 num_image_tokens (N 是动态的)
-            # 所以直接对除了 CLS token (index 0) 之外的所有 token 做 mean pooling
-            if input_features is not None:
-                image_tokens = sequence_output[:, 1:, :] # Skip CLS
-            else:
-                image_tokens = sequence_output[:, -self.num_image_tokens:, :]
-            
-            pooled_output = image_tokens.mean(dim=1)
-            pooled_output = self.fc_norm(pooled_output)
-        else:
-            pooled_output = sequence_output[:, 0, :] # Use CLS token
         
+
+        pooled_output = sequence_output[:, 0, :] 
+        
+
         logits = self.classifier(pooled_output)
 
         loss = None
@@ -761,9 +749,8 @@ class ViTNepaForImageClassification(ViTNepaPreTrainedModel):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
-# ==========================================
-# 新增：ViTNepaForPreTraining 类 (请添加到文件末尾)
-# ==========================================
+
+
 class ViTNepaForPreTraining(ViTNepaPreTrainedModel):
     def __init__(self, config: ViTNepaConfig):
         super().__init__(config)
@@ -771,8 +758,6 @@ class ViTNepaForPreTraining(ViTNepaPreTrainedModel):
         
         self.input_feat_dim = getattr(config, "input_feat_dim", 1536)
         
-        # 解码头 (Decoder Head)：从 hidden_size 预测回原始特征维度
-        # 这是一个简单的 MLP
         self.decoder = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size),
             nn.GELU(),
@@ -798,20 +783,13 @@ class ViTNepaForPreTraining(ViTNepaPreTrainedModel):
         )
 
         sequence_output = outputs.last_hidden_state
-        # sequence_output: (Batch, 1 + Num_Patches, Hidden) -> 注意有一个 CLS token
-
-        # 移除 CLS token，只取 patch 的部分
         patch_output = sequence_output[:, 1:, :] 
         
-        # 预测特征
-        prediction = self.decoder(patch_output) # (Batch, Num_Patches, Feat_Dim)
+        prediction = self.decoder(patch_output) 
 
         loss = None
         if label_features is not None and bool_masked_pos is not None:
-            # 只计算被 Mask 掉的位置的 Loss
-            # bool_masked_pos: (Batch, Num_Patches)
-            
-            # 展平以便计算
+
             mask_flat = bool_masked_pos.view(-1)
             pred_flat = prediction.reshape(-1, self.input_feat_dim)
             label_flat = label_features.reshape(-1, self.input_feat_dim)

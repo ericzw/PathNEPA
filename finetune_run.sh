@@ -21,9 +21,9 @@ LOG_FILE="${OUTPUT_DIR}/${DATASET_NAME}_cv.log"
 # ==========================================
 # 🧠 第三部分：模型与特征配置
 # ==========================================
-PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224-sft" # ⚠️ 替换为你刚刚预训练跑出来的真实 Checkpoint 路径
+PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224" # ⚠️ 替换为你刚刚预训练跑出来的真实 Checkpoint 路径
 NUM_CLASSES=3                            # 下游亚型分类的类别数
-NUM_CROPS=4                              # 每个 WSI 采样的特征 Patch 数量 
+NUM_CROPS=32                             # 每个 WSI 采样的特征 Patch 数量 
 MASK_RATIO=0.0                           # 分类任务
 
 # ==========================================
