@@ -5,24 +5,24 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=3           # 指定使用的 GPU 卡号
+export CUDA_VISIBLE_DEVICES=1           # 指定使用的 GPU 卡号
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
 # ==========================================
-DATASET_NAME="BRCA"            # 数据集名称 (仅用于日志和输出文件夹命名)
+DATASET_NAME="RCC"            # 数据集名称 (仅用于日志和输出文件夹命名)
 ROOT_DIR="/data2/mengzibing/medicine"
 CODE_DIR="${ROOT_DIR}/PathNEPA"
-DATA_DIR="${ROOT_DIR}/datasets/dataset_o/Sub-typing/BRCA"
-CLINICAL_FILE="/data2/mengzibing/medicine/datasets/dataset_o/A-source_label/clinical_labels_ER_status.csv" # 替换为真实的临床标签 CSV 路径
+DATA_DIR="${ROOT_DIR}/datasets/dataset_o/Sub-typing/RCC"
+CLINICAL_FILE="/data2/mengzibing/medicine/datasets/dataset_o/A-source_label/rcc_subtyping_labels.csv" # 替换为真实的临床标签 CSV 路径
 OUTPUT_DIR="./output_${DATASET_NAME}"
 LOG_FILE="${OUTPUT_DIR}/${DATASET_NAME}_cv.log"
 
 # ==========================================
 # 🧠 第三部分：模型与特征配置
 # ==========================================
-PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224" # ⚠️ 替换为你刚刚预训练跑出来的真实 Checkpoint 路径
-NUM_CLASSES=2                            # 下游亚型分类的类别数
+PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224-sft" # ⚠️ 替换为你刚刚预训练跑出来的真实 Checkpoint 路径
+NUM_CLASSES=3                            # 下游亚型分类的类别数
 NUM_CROPS=4                              # 每个 WSI 采样的特征 Patch 数量 
 MASK_RATIO=0.0                           # 分类任务
 

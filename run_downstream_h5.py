@@ -81,7 +81,6 @@ def main():
 
     if data_args.clinical_file and os.path.exists(data_args.clinical_file):
         df = pd.read_csv(data_args.clinical_file)
-        # 假设 csv 中有 'patient_id' 和 'label' 两列
         file_to_label_dict = dict(zip(df['patient_id'], df['label']))
     else:
         print("⚠️ 未提供 clinical_file，使用 Mock 数据进行测试...")
@@ -146,7 +145,15 @@ def main():
     print(f"✅ 匹配完成！共成功为病人匹配到了 {matched_file_count} 个 H5 文件。")
     if matched_file_count == 0:
         raise ValueError("❌ 匹配失败！没有任何 H5 文件和 CSV 里的病人 ID 对应上，请检查上面的打印格式！")
-
+        
+    valid_patient_ids = [pid for pid in patient_ids if len(patient_to_files[pid]) > 0]
+    print(f"🧹 数据清洗：CSV 共有 {len(patient_ids)} 人，实际拥有 H5 文件的有 {len(valid_patient_ids)} 人。")
+    
+    # 覆盖原来的 patient_ids，只用有效病人做后续的 5-Fold
+    patient_ids = np.array(valid_patient_ids)
+    
+    if len(patient_ids) == 0:
+        raise ValueError("❌ 过滤后可用病人数量为 0，请检查匹配逻辑！")
     # ==========================================
     # 6. 5-Fold 交叉验证主循环
     # ==========================================
