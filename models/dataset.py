@@ -151,16 +151,19 @@ class PathNEPAFeatureDataset(Dataset):
             "bool_masked_pos": bool_masked_pos                        # (64, 1024)
         }
 
+import torch
+from torch.utils.data import Dataset
+import h5py
+import numpy as np
+
 class FastOfflineMILDataset(Dataset):
     """
-    专为 Downstream Subtyping (5-Fold) 打造。
-    直接接收匹配好的文件路径列表和标签，彻底杜绝硬盘扫盘造成的启动卡死。
+    专为 Downstream Subtyping (分类任务) 打造的极简高效版。
+    直接读取完整的 WSI 特征包 (Bag)，去除所有无用的预训练采样和掩码逻辑。
     """
-    def __init__(self, file_paths, labels, num_crops=64, mask_ratio=0.0):
+    def __init__(self, file_paths, labels):
         self.files = file_paths
         self.labels = labels
-        self.num_crops = num_crops
-        self.mask_ratio = mask_ratio
 
     def __len__(self):
         return len(self.files)
@@ -170,42 +173,33 @@ class FastOfflineMILDataset(Dataset):
         label = self.labels[idx]
         
         try:
-            with h5py.File(file_path, 'r', swmr=True, libver='latest') as f:
-                dataset = f['features']
-                M = dataset.shape[0]
-                
-                if M >= self.num_crops:
-                    indices = np.random.choice(M, self.num_crops, replace=False)
-                else:
-                    indices = np.random.choice(M, self.num_crops, replace=True)
-                
-                sorted_indices = np.sort(indices)
-                sampled_crops = dataset[sorted_indices, ...]
-                
-                if M >= self.num_crops:
-                    np.random.shuffle(sampled_crops)
-                
-                input_features = torch.from_numpy(sampled_crops).float()
-                
-            bool_masked_pos = torch.zeros((self.num_crops, input_features.shape[1]), dtype=torch.bool)
-            if self.mask_ratio > 0:
-                for i in range(self.num_crops):
-                    valid_locs = torch.where(input_features[i, :, 0] != 0)[0]
-                    num_mask = int(len(valid_locs) * self.mask_ratio)
-                    if num_mask > 0:
-                        masked_idx = valid_locs[torch.randperm(len(valid_locs))[:num_mask]]
-                        bool_masked_pos[i, masked_idx] = True
+            if str(file_path).endswith('.h5'):
+                with h5py.File(file_path, 'r', swmr=True, libver='latest') as f:
+                    features = f['features'][:] 
+                    input_features = torch.from_numpy(features).float()
+                    
+                    # 💡 【新增】：尝试读取坐标数据
+                    if 'coords' in f:
+                        coords = f['coords'][:]
+                    elif 'coordinates' in f:
+                        coords = f['coordinates'][:]
+                    else:
+                        # 如果确实没存坐标，给个全 0 占位符防报错
+                        coords = np.zeros((features.shape[0], 2)) 
+                        
+                    coords = torch.from_numpy(coords).float()
+            else:
+                raise ValueError("不支持的文件格式")
 
         except Exception as e:
-            # print(f"❌ 读取异常 {file_path}: {e}") # 生产环境建议注释，防日志刷屏
-            input_features = torch.zeros((self.num_crops, 1024, 1536)).float()
-            bool_masked_pos = torch.zeros((self.num_crops, 1024)).bool()
+            input_features = torch.zeros((1, 1536)).float()
+            coords = torch.zeros((1, 2)).float()
+            label = -1 
 
         return {
-            "input_features": input_features,                         
-            "label_features": input_features.clone(),                 
-            "bool_masked_pos": bool_masked_pos,
-            "labels": label
+            "input_features": input_features,
+            "coords": coords, # 💡 输出给 collate_fn
+            "labels": torch.tensor(label, dtype=torch.long)
         }
 
 # ==============================================================================
@@ -270,4 +264,55 @@ class OfflinePretrainDataset(Dataset):
             "input_features": input_features,                         
             "label_features": input_features.clone(),                 
             "bool_masked_pos": bool_masked_pos                        
+        }
+
+class DatasetForSur(Dataset):
+    """
+    专为下游生存分析 (Survival Analysis) 打造的高效版 Dataset。
+    直接读取完整的 WSI 特征包 (Bag)，并正确处理包含时间浮点数的三元组标签。
+    """
+    def __init__(self, file_paths, labels):
+        self.files = file_paths
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        file_path = self.files[idx]
+        label = self.labels[idx]  # 这里预期收到的是一个 list，比如 [bin, status, time_months]
+        
+        try:
+            if str(file_path).endswith('.h5'):
+                with h5py.File(file_path, 'r', swmr=True, libver='latest') as f:
+                    features = f['features'][:] 
+                    input_features = torch.from_numpy(features).float()
+                    
+                    # 💡 读取坐标数据
+                    if 'coords' in f:
+                        coords = f['coords'][:]
+                    elif 'coordinates' in f:
+                        coords = f['coordinates'][:]
+                    else:
+                        # 如果确实没存坐标，给个全 0 占位符防报错
+                        coords = np.zeros((features.shape[0], 2)) 
+                        
+                    coords = torch.from_numpy(coords).float()
+            else:
+                raise ValueError("不支持的文件格式")
+
+        except Exception as e:
+            # 💡 【核心修复 1】：如果读取失败，也必须返回一个形状一致的假标签 [0.0, 0.0, 0.0]
+            # 绝不能返回 -1，否则会因为维度不统一导致 collate_fn 报错
+            print(f"⚠️ 警告：跳过损坏或无法读取的样本 {file_path}，错误：{e}")
+            input_features = torch.zeros((1, 1536), dtype=torch.float32)
+            coords = torch.zeros((1, 2), dtype=torch.float32)
+            label = [0.0, 0.0, 0.0] 
+
+        # 💡 【核心修复 2】：生存时间包含小数，必须用 torch.float32！
+        # 绝不能用 torch.long，否则浮点数的存活时间会被直接抹零去整
+        return {
+            "input_features": input_features,
+            "coords": coords, 
+            "labels": torch.tensor(label, dtype=torch.float32)
         }

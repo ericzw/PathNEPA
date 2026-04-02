@@ -8,7 +8,7 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import Optional
 from sklearn.model_selection import KFold
-
+from lifelines.utils import concordance_index
 from transformers import (
     HfArgumentParser,
     Trainer,
@@ -17,8 +17,9 @@ from transformers import (
 )
 
 # 导入你自定义的类
-from models.dataset import FastOfflineMILDataset
-from models.vit_nepa import ViTNepaForImageClassification
+from models.dataset import DatasetForSur as FastOfflineMILDataset
+# 把 import CleanDownstreamMIL 改为：
+from models.downstream_surv import SurvDownstreamMIL
 
 # ==========================================
 # 1. 定义参数类 (Model & Data Arguments)
@@ -48,15 +49,7 @@ class DataArguments:
         default=None,
         metadata={"help": "包含 patient_id 和 label 的 CSV 临床文件路径"}
     )
-    num_crops: int = field(
-        default=16,
-        metadata={"help": "每个 WSI 采样的特征 Patch 数量 (影响显存)"}
-    )
-    mask_ratio: float = field(
-        default=0.0,
-        metadata={"help": "下游分类任务通常不需要 Mask，默认为 0.0"}
-    )
-
+    
 def main():
     # ==========================================
     # 2. 解析命令行参数
@@ -81,7 +74,12 @@ def main():
 
     if data_args.clinical_file and os.path.exists(data_args.clinical_file):
         df = pd.read_csv(data_args.clinical_file)
-        file_to_label_dict = dict(zip(df['patient_id'], df['label']))
+        file_to_label_dict = {}
+        for _, row in df.iterrows():
+            # 获取病人 ID
+            pid = row['diagnoses.submitter_id']
+            # 将 (survival_bin, status, time_months) 打包存入字典
+            file_to_label_dict[pid] = (row['survival_bin'], row['status'], row['time_months'])
     else:
         print("⚠️ 未提供 clinical_file，使用 Mock 数据进行测试...")
         all_patients = [f"patient_{str(i).zfill(3)}" for i in range(1, 101)]
@@ -97,23 +95,73 @@ def main():
     f1_metric = evaluate.load("f1")
 
     def compute_metrics(eval_pred):
-        logits, labels = eval_pred
-        predictions = np.argmax(logits, axis=-1)
-        acc = accuracy_metric.compute(predictions=predictions, references=labels)["accuracy"]
-        f1 = f1_metric.compute(predictions=predictions, references=labels, average="macro")["f1"]
-        return {"accuracy": acc, "f1_macro": f1}
+        hazards, labels_combined = eval_pred
+        
+        # 拆解标签: labels_combined 形状是 [Batch, 3]
+        status = labels_combined[:, 1]       # c (事件是否发生: 1或0)
+        event_time = labels_combined[:, 2]   # 真实发生时间 (time_months)
+        
+        # 根据 hazards 计算累积生存概率
+        survival = np.cumprod(1 - hazards, axis=1)
+        
+        # 计算风险得分 Risk Score (生存概率的总和的负数)
+        # 模型预测某人活得越久，risk_score 越小
+        risk_score = -np.sum(survival, axis=1)
+        
+        try:
+            # concordance_index (真实生存时间, 风险得分, 是否发生事件)
+            c_index = concordance_index(event_time, risk_score, status)
+        except Exception as e:
+            # 若整个 batch 全是删失(0)无死亡(1)，C-Index 会抛出异常
+            c_index = 0.5 
+            
+        return {"c_index": c_index}
 
     def feature_collate_fn(examples):
-        batch_features = []
-        batch_labels = []
-        for example in examples:
-            feat = example["input_features"] 
-            feat_flat = feat.view(-1, feat.shape[-1]) # 展平为长序列
-            batch_features.append(feat_flat)
-            batch_labels.append(torch.tensor(example["labels"], dtype=torch.long))
+        batch_labels = [torch.as_tensor(ex["labels"], dtype=torch.float32) for ex in examples]
+        MAX_SEQ_LENGTH = 10000  # 防 OOM 截断长度
+        
+        features_list = []
+        coords_list = [] 
+        
+        for ex in examples:
+            feat = ex["input_features"] 
+            # 1. 强制展平特征：去掉多余的 batch 维度，变成纯粹的 [M, 1536]
+            feat_flat = feat.view(-1, feat.shape[-1])
+            
+            coord = ex["coords"]
+            # 💡【核心修复】2. 强制展平坐标：变成纯粹的 [M, 2]
+            coord_flat = coord.view(-1, coord.shape[-1])
+            
+            # 💡【安全网】如果 H5 里压根没存坐标导致长度不对，自动生成全 0 坐标防崩溃
+            if coord_flat.shape[0] != feat_flat.shape[0]:
+                coord_flat = torch.zeros((feat_flat.shape[0], 2), dtype=torch.float32)
+            
+            # 3. 同步截断
+            if feat_flat.shape[0] > MAX_SEQ_LENGTH:
+                feat_flat = feat_flat[:MAX_SEQ_LENGTH, :]
+                coord_flat = coord_flat[:MAX_SEQ_LENGTH, :] 
+                
+            features_list.append(feat_flat)
+            coords_list.append(coord_flat)
+
+        # 动态 Padding
+        if len(features_list) == 1:
+            batch_features = features_list[0].unsqueeze(0) 
+            batch_coords = coords_list[0].unsqueeze(0) # 💡 现在稳定是 3D: [1, M, 2]
+            attention_mask = torch.ones(1, batch_features.size(1), dtype=torch.long)
+        else:
+            batch_features = torch.nn.utils.rnn.pad_sequence(features_list, batch_first=True)
+            batch_coords = torch.nn.utils.rnn.pad_sequence(coords_list, batch_first=True) 
+            
+            attention_mask = torch.zeros(batch_features.shape[:2], dtype=torch.long)
+            for i, feat in enumerate(features_list):
+                attention_mask[i, :feat.size(0)] = 1
 
         return {
-            "input_features": torch.stack(batch_features), 
+            "input_features": batch_features,
+            "coords": batch_coords, # 喂给模型
+            "attention_mask": attention_mask,
             "labels": torch.stack(batch_labels)
         }
 
@@ -173,46 +221,40 @@ def main():
         val_patients = patient_ids[val_idx]
         
         # 💡 瞬间组装当前折的训练集纯列表
+        # 💡 瞬间组装当前折的训练集纯列表
         train_files, train_labels = [], []
         for pid in train_patients:
-            label = file_to_label_dict[pid]
-            # 确保将字符串标签转为 ID 整数
-            label_id = label2id.get(str(label), label) if isinstance(label, str) else label
+            label_tuple = file_to_label_dict[pid] # 这是一个 tuple: (bin, status, time)
             for f in patient_to_files[pid]:
                 train_files.append(f)
-                train_labels.append(label_id)
+                train_labels.append(list(label_tuple)) # 💡 【修复】直接转成 list 放进去
                 
         # 💡 瞬间组装当前折的验证集纯列表
         val_files, val_labels = [], []
         for pid in val_patients:
-            label = file_to_label_dict[pid]
-            label_id = label2id.get(str(label), label) if isinstance(label, str) else label
+            label_tuple = file_to_label_dict[pid]
             for f in patient_to_files[pid]:
                 val_files.append(f)
-                val_labels.append(label_id)
+                val_labels.append(list(label_tuple)) # 💡 【修复】直接转成 list 放进去
         
         # 使用组装好的纯列表实例化 Dataset
+        # 1. 实例化极简的 Dataset (删掉 num_crops 和 mask_ratio)
         train_dataset = FastOfflineMILDataset(
             file_paths=train_files,
-            labels=train_labels,
-            num_crops=data_args.num_crops,
-            mask_ratio=data_args.mask_ratio
+            labels=train_labels
         )
         
         val_dataset = FastOfflineMILDataset(
             file_paths=val_files,
-            labels=val_labels,
-            num_crops=data_args.num_crops,
-            mask_ratio=data_args.mask_ratio
+            labels=val_labels
         )
         
-        # 重新初始化模型，加载预训练权重并替换分类头
-        model = ViTNepaForImageClassification.from_pretrained(
-            model_args.model_name_or_path,
-            num_labels=model_args.num_classes,
-            id2label=id2label,
-            label2id=label2id,
-            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes 
+        # 2. 实例化我们新写的聚合模型
+        model = SurvDownstreamMIL(
+            hidden_size=1536, 
+            num_bins=model_args.num_classes, # 💡 【修复】这里把参数名改成 num_bins
+            num_layers=2,  
+            num_heads=12
         )
         
         # 修改当前 Fold 的专属输出路径
@@ -230,14 +272,13 @@ def main():
         # 开始训练
         trainer.train()
         
-        # 评估并记录成绩
         eval_metrics = trainer.evaluate()
-        print(f"\n✅ Fold {fold + 1} 最佳结果 | Acc: {eval_metrics['eval_accuracy']:.4f} | F1: {eval_metrics['eval_f1_macro']:.4f}")
+        # 💡 【修复】读取 C-Index 而不是 accuracy
+        print(f"\n✅ Fold {fold + 1} 最佳结果 | C-Index: {eval_metrics['eval_c_index']:.4f}")
         
         fold_results.append({
             "fold": fold + 1,
-            "accuracy": eval_metrics['eval_accuracy'],
-            "f1_macro": eval_metrics['eval_f1_macro']
+            "c_index": eval_metrics['eval_c_index'] # 💡 记录 C-Index
         })
 
     # ==========================================
@@ -246,15 +287,14 @@ def main():
     print("\n" + "*"*50)
     print("🎉 5-Fold Cross Validation 全部完成！")
     
-    acc_list = [res["accuracy"] for res in fold_results]
-    f1_list = [res["f1_macro"] for res in fold_results]
+    # 💡 提取并打印 C-Index 汇总
+    c_index_list = [res["c_index"] for res in fold_results]
     
     for res in fold_results:
-        print(f"Fold {res['fold']}: Acc: {res['accuracy']:.4f} | Macro F1: {res['f1_macro']:.4f}")
+        print(f"Fold {res['fold']}: C-Index: {res['c_index']:.4f}")
         
     print("-" * 50)
-    print(f"✅ 平均 Accuracy : {np.mean(acc_list):.4f} ± {np.std(acc_list):.4f}")
-    print(f"✅ 平均 Macro F1 : {np.mean(f1_list):.4f} ± {np.std(f1_list):.4f}")
+    print(f"✅ 平均 C-Index : {np.mean(c_index_list):.4f} ± {np.std(c_index_list):.4f}")
     print("*"*50)
 
 if __name__ == "__main__":

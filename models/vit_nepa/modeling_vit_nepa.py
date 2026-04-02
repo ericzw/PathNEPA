@@ -284,7 +284,7 @@ def eager_attention_forward(
 def apply_rotary_pos_emb(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, **kwargs
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    
+
     # [MODIFIED] 如果没有 cos/sin (即输入是纯特征，没有空间结构)，则不进行旋转编码
     if cos is None or sin is None:
         return q, k
