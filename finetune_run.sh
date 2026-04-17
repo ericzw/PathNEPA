@@ -5,24 +5,24 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=3           # 指定使用的 GPU 卡号
+export CUDA_VISIBLE_DEVICES=2           # 指定使用的 GPU 卡号
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
 # ==========================================
-DATASET_NAME="RCC"            # 数据集名称 (仅用于日志和输出文件夹命名)
-ROOT_DIR="/data2/mengzibing/medicine"
+DATASET_NAME="BRCA"            # 数据集名称 (仅用于日志和输出文件夹命名)
+ROOT_DIR="/data2/mengzibing/Amedicine"
 CODE_DIR="${ROOT_DIR}/PathNEPA"
-DATA_DIR="${ROOT_DIR}/datasets/dataset_o/Sub-typing/RCC"
-CLINICAL_FILE="/data2/mengzibing/medicine/datasets/dataset_o/A-source_label/subtyping/rcc_subtyping_labels.csv" # 替换为真实的临床标签 CSV 路径
-OUTPUT_DIR="./output_${DATASET_NAME}2"
+DATA_DIR="${ROOT_DIR}/dataset/tcga-feature-clean/Sub-typing/${DATASET_NAME}"
+CLINICAL_FILE="${ROOT_DIR}/dataset/tcga-label-cleaned/subtyping/${DATASET_NAME}.csv" # 替换为真实的临床标签 CSV 路径
+OUTPUT_DIR="./output_${DATASET_NAME}"
 LOG_FILE="${OUTPUT_DIR}/${DATASET_NAME}_cv.log"
 
 # ==========================================
 # 🧠 第三部分：模型与特征配置
 # ==========================================
 PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224" # ⚠️ 聚合网络是随机初始化的，这个参数目前仅作占位符防报错
-NUM_CLASSES=3                            # 下游亚型分类的类别数
+NUM_CLASSES=2                            # 下游亚型分类的类别数
 
 # ==========================================
 # 🚀 第四部分：核心训练超参数 (Downstream MIL Aggregation)
@@ -69,7 +69,7 @@ echo "========================================="
 cd "$CODE_DIR"
 
 # 放到后台运行，并将所有输出重定向到 LOG_FILE
-nohup python run_downstream_h5.py \
+nohup python run_sub_h5.py \
     --model_name_or_path "$PRETRAINED_WEIGHTS" \
     --data_dir "$DATA_DIR" \
     --clinical_file "$CLINICAL_FILE" \

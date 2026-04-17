@@ -5,24 +5,25 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=3           # 指定使用的 GPU 卡号
+export CUDA_VISIBLE_DEVICES=1           # 指定使用的 GPU 卡号
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
 # ==========================================
-DATASET_NAME="BRCA_Survival"             # 数据集名称
-ROOT_DIR="/data2/mengzibing/medicine"
-OUTPUT_DIR="./output_${DATASET_NAME}2"
+TASK="Survival_Prediction"
+DATASET_NAME="BRCA"             # 数据集名称
+ROOT_DIR="/data2/mengzibing/Amedicine"
+OUTPUT_DIR="output_${DATASET_NAME}"
 CODE_DIR="${ROOT_DIR}/PathNEPA"
-DATA_DIR="${ROOT_DIR}/datasets/dataset_o/Survival_Prediction/BRCA"
-CLINICAL_FILE="/data2/mengzibing/medicine/datasets/dataset_o/A-source_label/survival_prediction/bins/BRCA.csv" #
-LOG_FILE="${OUTPUT_DIR}/${DATASET_NAME}_cv.log"
+DATA_DIR="${ROOT_DIR}/dataset/tcga-feature-clean/Survival Prediction/${DATASET_NAME}"
+CLINICAL_FILE="/data2/mengzibing/Amedicine/dataset/tcga-label-cleaned/survival_prediction/bins/${DATASET_NAME}.csv" #
+LOG_FILE="./${TASK}/${OUTPUT_DIR}/${DATASET_NAME}_cv.log"
 
 # ==========================================
 # 🧠 第三部分：模型与特征配置
 # ==========================================
 PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224" 
-NUM_BINS=4                              # ⚠️ 替换为你数据中的离散区间数(如4)
+NUM_BINS=4                             
 
 # ==========================================
 # 🚀 第四部分：核心训练超参数 (Survival Prediction)
@@ -51,7 +52,7 @@ REMOVE_UNUSED_COLUMNS="False"
 # ==========================================
 # 🎬 启动执行区 (⚠️ 这里的 \ 后面绝对不能有注释或空格)
 # ==========================================
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$TASK/$OUTPUT_DIR"
 
 echo "========================================="
 echo "🚀 准备启动下游 Survival 5-Fold 交叉验证..."

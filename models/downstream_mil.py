@@ -1,4 +1,3 @@
-# 文件路径: models/downstream_mil.py
 import torch
 import torch.nn as nn
 from transformers.models.vit.modeling_vit import ViTEncoder
@@ -13,7 +12,6 @@ class CleanDownstreamMIL(nn.Module):
         super().__init__()
         
         # 1. 初始化标准 Transformer Encoder (无位置编码)
-        # 1. 初始化标准 Transformer Encoder (无位置编码)
         config = ViTConfig(
             hidden_size=hidden_size,
             num_hidden_layers=num_layers,
@@ -21,9 +19,7 @@ class CleanDownstreamMIL(nn.Module):
             intermediate_size=hidden_size * 4
         )
         
-        # 💡 【核心修复】强制指定 Attention 的底层实现方式
-        # 推荐使用 "eager" (最稳定兼容) 或 "sdpa" (PyTorch 2.0+ 加速)
-        # config._attn_implementation = "eager" 
+        # 💡 强制指定 Attention 的底层实现方式 (PyTorch 2.0+ 加速)
         config._attn_implementation = "sdpa"
         self.transformer_encoder = ViTEncoder(config)
         
@@ -33,7 +29,8 @@ class CleanDownstreamMIL(nn.Module):
         # 3. 分类头
         self.classifier = nn.Linear(hidden_size, num_classes)
         
-    def forward(self, input_features, attention_mask=None, labels=None):
+    # 💡 核心修复：加上 coords=None 和 **kwargs 兜底，完美兼容 Trainer
+    def forward(self, input_features, attention_mask=None, labels=None, coords=None, **kwargs):
         batch_size = input_features.shape[0]
         
         # 1. 拼接 CLS Token
@@ -52,10 +49,6 @@ class CleanDownstreamMIL(nn.Module):
         # 3. 送入 Encoder
         encoder_outputs = self.transformer_encoder(
             hidden_states,
-            # head_mask=None,
-            # output_attentions=False,
-            # 注意：如果 transformers 版本较新，这里可能需要传 attention_mask=extended_attention_mask
-            # 我们按照底层源码要求直接传进去
         )
         # ViTEncoder 返回的是 tuple，第一项是 hidden_states
         sequence_output = encoder_outputs[0]

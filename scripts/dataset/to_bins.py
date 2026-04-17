@@ -120,7 +120,7 @@ def generate_tcga_survival_tables(input_dir='.', output_dir='./processed_csv', n
 
 if __name__ == "__main__":
     generate_tcga_survival_tables(
-        input_dir='/data2/mengzibing/medicine/datasets/dataset_o/A-source_label/tsv',
-        output_dir='/data2/mengzibing/medicine/datasets/dataset_o/A-source_label/survival_prediction/bins/',
+        input_dir='/data2/mengzibing/Amedicine/dataset/tcga-label/tsv',
+        output_dir='/data2/mengzibing/Amedicine/dataset/tcga-label-cleaned/survival_prediction/bins',
         num_bins=4
     )

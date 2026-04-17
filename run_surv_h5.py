@@ -16,9 +16,7 @@ from transformers import (
     set_seed
 )
 
-# 导入你自定义的类
 from models.dataset import DatasetForSur as FastOfflineMILDataset
-# 把 import CleanDownstreamMIL 改为：
 from models.downstream_surv import SurvDownstreamMIL
 
 # ==========================================

@@ -1,77 +1,97 @@
-import json
+import re
+import ast
 import matplotlib.pyplot as plt
-import os
-import matplotlib
-matplotlib.use('Agg') # 适配 AutoDL 无显示器环境
 
-def plot_training_results(json_path):
-    if not os.path.exists(json_path):
-        print(f"❌ 找不到文件: {json_path}")
+def parse_and_plot_log(log_file_path):
+    # 存储解析后的数据
+    fold_data = {}
+    current_fold = 0
+    
+    with open(log_file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            
+            # 1. 匹配当前是第几折
+            fold_match = re.search(r'🔥 正在训练 Fold (\d+) / 5', line)
+            if fold_match:
+                current_fold = int(fold_match.group(1))
+                fold_data[current_fold] = {
+                    'train_epochs': [], 'train_loss': [],
+                    'eval_epochs': [], 'eval_loss': [], 'eval_acc': [], 'eval_f1': []
+                }
+                continue
+                
+            # 如果还没开始第一折，跳过
+            if current_fold == 0:
+                continue
+                
+            # 2. 匹配 Training Loss 字典
+            if line.startswith("{'loss':"):
+                try:
+                    data_dict = ast.literal_eval(line)
+                    fold_data[current_fold]['train_epochs'].append(data_dict['epoch'])
+                    fold_data[current_fold]['train_loss'].append(data_dict['loss'])
+                except:
+                    pass
+                    
+            # 3. 匹配 Evaluation 字典
+            elif line.startswith("{'eval_loss':"):
+                try:
+                    data_dict = ast.literal_eval(line)
+                    fold_data[current_fold]['eval_epochs'].append(data_dict['epoch'])
+                    fold_data[current_fold]['eval_loss'].append(data_dict['eval_loss'])
+                    fold_data[current_fold]['eval_acc'].append(data_dict['eval_accuracy'])
+                    fold_data[current_fold]['eval_f1'].append(data_dict['eval_f1_macro'])
+                except:
+                    pass
+
+    # ================= 画图部分 =================
+    num_folds = len(fold_data)
+    if num_folds == 0:
+        print("没有在 Log 中找到有效数据！")
         return
 
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+    fig, axes = plt.subplots(nrows=2, ncols=num_folds, figsize=(6 * num_folds, 10))
+    if num_folds == 1:
+        axes = axes.reshape(2, 1)
 
-    log_history = data.get("log_history", [])
-    print(f"📊 总共读取到 {len(log_history)} 条日志记录")
-
-    train_steps, train_loss, lrs = [], [], []
-    eval_steps, eval_loss = [], []
-
-    for entry in log_history:
-        step = entry.get("step")
-        # 兼容处理：检查多种可能的 Loss 键名
-        t_loss = entry.get("loss") or entry.get("train_loss")
-        e_loss = entry.get("eval_loss")
+    for i, fold in enumerate(sorted(fold_data.keys())):
+        d = fold_data[fold]
         
-        if t_loss is not None:
-            train_steps.append(step)
-            train_loss.append(t_loss)
-            if "learning_rate" in entry:
-                lrs.append(entry["learning_rate"])
+        # --- 第一排：Loss 曲线 ---
+        ax_loss = axes[0, i]
+        ax_loss.plot(d['train_epochs'], d['train_loss'], label='Train Loss', color='#1f77b4', alpha=0.8, linewidth=1.5)
+        if d['eval_epochs']:
+            ax_loss.plot(d['eval_epochs'], d['eval_loss'], label='Eval Loss', color='#ff4b33', linewidth=3)
         
-        if e_loss is not None:
-            eval_steps.append(step)
-            eval_loss.append(e_loss)
+        ax_loss.set_title(f'Fold {fold}: Loss Curve', fontsize=12, fontweight='bold')
+        ax_loss.set_xlabel('Epoch', fontsize=11)
+        ax_loss.set_ylabel('Loss (Log Scale)', fontsize=11)
+        
+        # ✅ 核心：对数坐标 + 足够大的纵轴范围，能看到底部所有点
+        ax_loss.set_yscale('log')
+        ax_loss.set_ylim(bottom=0.001, top=100)  # 从 0.001 ~ 100，覆盖你所有loss范围
+        # # ax_loss.set_yscale('log')
+        # ax_loss.set_ylim(bottom=1e-5, top=3)  # 只看0.0001~2的区间，放大底部
+        ax_loss.legend(fontsize=10)
+        ax_loss.grid(True, linestyle='--', alpha=0.6)   
 
-    print(f"📈 提取到训练点数: {len(train_steps)}")
-    print(f"📉 提取到验证点数: {len(eval_steps)}")
+        # --- 第二排：Accuracy / F1 曲线 ---
+        ax_score = axes[1, i]
+        if d['eval_epochs']:
+            ax_score.plot(d['eval_epochs'], d['eval_acc'], label='Eval Accuracy', marker='o', color='#2ca02c', linewidth=2)
+            ax_score.plot(d['eval_epochs'], d['eval_f1'], label='Eval F1 Macro', marker='s', color='#ff7f0e', linewidth=2)
+        ax_score.set_title(f'Fold {fold}: Evaluation Scores', fontsize=12, fontweight='bold')
+        ax_score.set_xlabel('Epoch', fontsize=11)
+        ax_score.set_ylabel('Score (0 ~ 1)', fontsize=11)
+        ax_score.set_ylim([0, 1.05])
+        ax_score.legend(fontsize=10)
+        ax_score.grid(True, linestyle='--', alpha=0.6)
 
-    if len(train_steps) == 0 and len(eval_steps) == 0:
-        print("⚠️ 警告：没有提取到任何 Loss 数据，请检查 JSON 内容！")
-        return
+    plt.tight_layout()
+    plt.savefig('kfold_training_curves.png', dpi=300, bbox_inches='tight')
+    print("✅ 画图完成！已保存为 kfold_training_curves.png")
 
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-
-    # --- 左轴：Loss ---
-    ax1.set_xlabel('Global Step')
-    ax1.set_ylabel('Loss', color='tab:red')
-    
-    # 使用 marker='o' 确保即使点很少也能看见
-    if train_loss:
-        ax1.plot(train_steps, train_loss, color='tab:red', linestyle='--', 
-                 marker='.', alpha=0.6, label='Train Loss')
-    if eval_loss:
-        ax1.plot(eval_steps, eval_loss, color='tab:red', marker='o', 
-                 markersize=8, linewidth=2, label='Eval Loss')
-    
-    ax1.tick_params(axis='y', labelcolor='tab:red')
-    ax1.grid(True, linestyle=':', alpha=0.5)
-
-    # --- 右轴：LR ---
-    if lrs:
-        ax2 = ax1.twinx()
-        ax2.set_ylabel('Learning Rate', color='tab:blue')
-        # 补齐 LR 的步数（有些 log 没带 LR）
-        ax2.plot(train_steps[:len(lrs)], lrs, color='tab:blue', label='LR')
-        ax2.tick_params(axis='y', labelcolor='tab:blue')
-
-    plt.title('NEPA Training Debug Plot')
-    fig.tight_layout()
-    
-    output_name = "debug_training_curves.png"
-    plt.savefig(output_name, dpi=300)
-    print(f"✅ 图片已更新并保存为: {output_name}")
-
+# 运行
 if __name__ == "__main__":
-    plot_training_results('/root/autodl-tmp/nepa/codes/nepa-main/output_pretrain_32x32_ema_1/trainer_state.json')
+    parse_and_plot_log('/data2/mengzibing/Amedicine/PathNEPA/output_RCC2/RCC2_cv.log')

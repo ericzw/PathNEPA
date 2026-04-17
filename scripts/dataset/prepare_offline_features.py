@@ -89,6 +89,6 @@ def prepare_offline_data(raw_h5_dir, output_dir, max_crops_to_save=32, crop_size
 
 if __name__ == "__main__":
     # 请替换为你的实际路径
-    RAW_TRAIN_DIR = "/data2/mengzibing/medicine/datasets/dataset_o/"
-    OFFLINE_TRAIN_DIR = "/data2/mengzibing/medicine/datasets/dataset_offline/All/"
+    RAW_TRAIN_DIR = "/data2/mengzibing/Amedicine/dataset/tcga-feature/"
+    OFFLINE_TRAIN_DIR = "/data2/mengzibing/Amedicine/dataset/dataset_offline/"
     prepare_offline_data(RAW_TRAIN_DIR, OFFLINE_TRAIN_DIR)

@@ -12,3 +12,4 @@ __pycache__/
 .DS_Store
 output_pretrain_32x32_ema_1/
 output_pretrain_32x32_ema_2/
+*.png

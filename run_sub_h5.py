@@ -8,7 +8,8 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import Optional
 from sklearn.model_selection import KFold
-
+from scipy.special import softmax
+from sklearn.metrics import roc_auc_score
 from transformers import (
     HfArgumentParser,
     Trainer,
@@ -88,12 +89,39 @@ def main():
     accuracy_metric = evaluate.load("accuracy")
     f1_metric = evaluate.load("f1")
 
+    # 💡 修改这里：增加 AUC 计算
     def compute_metrics(eval_pred):
         logits, labels = eval_pred
+        
+        # 1. 计算硬标签的 Acc 和 F1
         predictions = np.argmax(logits, axis=-1)
         acc = accuracy_metric.compute(predictions=predictions, references=labels)["accuracy"]
         f1 = f1_metric.compute(predictions=predictions, references=labels, average="macro")["f1"]
-        return {"accuracy": acc, "f1_macro": f1}
+        
+        # 2. 计算软概率的 AUC
+        probs = softmax(logits, axis=-1)
+        num_classes = logits.shape[-1] # 自动获取当前任务的类别数
+        
+        try:
+            if num_classes == 2:
+                # 🌟 二分类专属通道：只传入正类的概率 (索引为 1 的那一列)
+                auc = roc_auc_score(y_true=labels, y_score=probs[:, 1])
+            else:
+                # 🌟 多分类专属通道：传入整个矩阵，并指定 ovr 和所有类别标签
+                all_classes = list(range(num_classes))
+                auc = roc_auc_score(
+                    y_true=labels, 
+                    y_score=probs, 
+                    multi_class='ovr', 
+                    average='macro',
+                    labels=all_classes
+                )
+        except Exception as e:
+            # 打印致命报错，防止静默失败变 0
+            print(f"\n⚠️ [DEBUG] AUC 计算报错: {e}") 
+            auc = 0.0
+
+        return {"accuracy": acc, "f1_macro": f1, "auc_macro": auc}
 
     def feature_collate_fn(examples):
         batch_labels = [ex["labels"] for ex in examples]
@@ -154,16 +182,31 @@ def main():
         print(f"📄 样例 H5 文件名: {os.path.basename(all_h5_files[0])}")
     print(f"🧑‍⚕️ 样例 CSV 病人 ID: {patient_ids[0]}")
 
+    
     print("🧩 正在进行全局文件与标签匹配...")
     patient_to_files = {pid: [] for pid in patient_ids}
     matched_file_count = 0
     
+    # ================= 💡 终极 DEBUG 打印 =================
+    print("\n" + "!"*50)
+    print(f"【DEBUG】从 CSV 提取的头 3 个原始 ID: {patient_ids[:3]}")
+    if len(all_h5_files) > 0:
+        print(f"【DEBUG】从硬盘读取的头 3 个 H5 文件名: {[os.path.basename(f) for f in all_h5_files[:3]]}")
+    print("!"*50 + "\n")
+    # ======================================================
+
     for f in all_h5_files:
         basename = os.path.basename(f)
         for pid in patient_ids:
-            # 💡截取前 12 位进行匹配，防止后缀干扰
-            core_pid = str(pid)[:12] 
-            if core_pid in basename:
+            # 💡【核心修复】：
+            # 1. str(pid) 转字符串
+            # 2. .strip() 去除首尾所有看不见的空格、换行符
+            # 3. .upper() 强制大写，防止 tcga 和 TCGA 的差异
+            # 4. [:12] 截取前 12 位
+            core_pid = str(pid).strip().upper()[:12] 
+            
+            # basename 同样转大写后进行匹配
+            if core_pid in basename.upper():
                 patient_to_files[pid].append(f)
                 matched_file_count += 1
                 break # 找到归属即跳出内层循环
@@ -254,12 +297,15 @@ def main():
         
         # 评估并记录成绩
         eval_metrics = trainer.evaluate()
-        print(f"\n✅ Fold {fold + 1} 最佳结果 | Acc: {eval_metrics['eval_accuracy']:.4f} | F1: {eval_metrics['eval_f1_macro']:.4f}")
+        
+        # 💡 修改这里：加上 AUC 的打印
+        print(f"\n✅ Fold {fold + 1} 最佳结果 | Acc: {eval_metrics['eval_accuracy']:.4f} | F1: {eval_metrics['eval_f1_macro']:.4f} | AUC: {eval_metrics['eval_auc_macro']:.4f}")
         
         fold_results.append({
             "fold": fold + 1,
             "accuracy": eval_metrics['eval_accuracy'],
-            "f1_macro": eval_metrics['eval_f1_macro']
+            "f1_macro": eval_metrics['eval_f1_macro'],
+            "auc_macro": eval_metrics['eval_auc_macro'] # 💡 记录 AUC
         })
 
     # ==========================================
@@ -270,14 +316,16 @@ def main():
     
     acc_list = [res["accuracy"] for res in fold_results]
     f1_list = [res["f1_macro"] for res in fold_results]
+    auc_list = [res["auc_macro"] for res in fold_results] # 💡 提取 AUC 列表
     
     for res in fold_results:
-        print(f"Fold {res['fold']}: Acc: {res['accuracy']:.4f} | Macro F1: {res['f1_macro']:.4f}")
+        print(f"Fold {res['fold']}: Acc: {res['accuracy']:.4f} | Macro F1: {res['f1_macro']:.4f} | Macro AUC: {res['auc_macro']:.4f}")
         
     print("-" * 50)
     print(f"✅ 平均 Accuracy : {np.mean(acc_list):.4f} ± {np.std(acc_list):.4f}")
     print(f"✅ 平均 Macro F1 : {np.mean(f1_list):.4f} ± {np.std(f1_list):.4f}")
+    print(f"✅ 平均 Macro AUC: {np.mean(auc_list):.4f} ± {np.std(auc_list):.4f}") # 💡 打印平均 AUC
     print("*"*50)
-
+    
 if __name__ == "__main__":
     main()
