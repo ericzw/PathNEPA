@@ -1,7 +1,6 @@
 import os
 import sys
 import glob
-import torch
 import evaluate
 import numpy as np
 import pandas as pd
@@ -20,7 +19,32 @@ from transformers import (
 # 导入你自定义的类
 from models.dataset import FastOfflineMILDataset
 from models.downstream_mil import CleanDownstreamMIL
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
+# ========== ABMIL 分类头（直接插入） ==========
+class ABMILHead(nn.Module):
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(input_dim, input_dim),
+            nn.Tanh(),
+            nn.Linear(input_dim, 1)
+        )
+        self.classifier = nn.Linear(input_dim, num_classes)
+
+    def forward(self, x):
+        # x: [B, N, D]  (batch, patches, dim)
+        attn_weights = self.attention(x)  # [B, N, 1]
+        attn_weights = torch.softmax(attn_weights, dim=1)
+        
+        # 加权聚合
+        feat_agg = (x * attn_weights).sum(dim=1)  # [B, D]
+        
+        # 分类
+        logits = self.classifier(feat_agg)
+        return logits
 # ==========================================
 # 1. 定义参数类 (Model & Data Arguments)
 # ==========================================

@@ -5,13 +5,13 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=1           # 指定使用的 GPU 卡号
+export CUDA_VISIBLE_DEVICES=7           # 指定使用的 GPU 卡号
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
 # ==========================================
 TASK="Survival_Prediction"
-DATASET_NAME="BRCA"             # 数据集名称
+DATASET_NAME="GBMLGG"             # 数据集名称
 ROOT_DIR="/data2/mengzibing/Amedicine"
 OUTPUT_DIR="output_${DATASET_NAME}"
 CODE_DIR="${ROOT_DIR}/PathNEPA"

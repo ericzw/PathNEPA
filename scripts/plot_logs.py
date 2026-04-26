@@ -1,6 +1,7 @@
 import re
 import ast
 import matplotlib.pyplot as plt
+import os
 
 def parse_and_plot_log(log_file_path):
     # 存储解析后的数据
@@ -45,6 +46,10 @@ def parse_and_plot_log(log_file_path):
                 except:
                     pass
 
+    # ================= 自动生成图片名 =================
+    base_name = os.path.splitext(os.path.basename(log_file_path))[0]
+    save_img_path = f"{base_name}.png"
+
     # ================= 画图部分 =================
     num_folds = len(fold_data)
     if num_folds == 0:
@@ -58,7 +63,7 @@ def parse_and_plot_log(log_file_path):
     for i, fold in enumerate(sorted(fold_data.keys())):
         d = fold_data[fold]
         
-        # --- 第一排：Loss 曲线 ---
+        # --- 第一排：Loss 曲线（正常坐标，不是对数） ---
         ax_loss = axes[0, i]
         ax_loss.plot(d['train_epochs'], d['train_loss'], label='Train Loss', color='#1f77b4', alpha=0.8, linewidth=1.5)
         if d['eval_epochs']:
@@ -66,13 +71,9 @@ def parse_and_plot_log(log_file_path):
         
         ax_loss.set_title(f'Fold {fold}: Loss Curve', fontsize=12, fontweight='bold')
         ax_loss.set_xlabel('Epoch', fontsize=11)
-        ax_loss.set_ylabel('Loss (Log Scale)', fontsize=11)
+        ax_loss.set_ylabel('Loss', fontsize=11)
         
-        # ✅ 核心：对数坐标 + 足够大的纵轴范围，能看到底部所有点
-        ax_loss.set_yscale('log')
-        ax_loss.set_ylim(bottom=0.001, top=100)  # 从 0.001 ~ 100，覆盖你所有loss范围
-        # # ax_loss.set_yscale('log')
-        # ax_loss.set_ylim(bottom=1e-5, top=3)  # 只看0.0001~2的区间，放大底部
+        # ================= 已改为正常坐标 =================
         ax_loss.legend(fontsize=10)
         ax_loss.grid(True, linestyle='--', alpha=0.6)   
 
@@ -89,9 +90,10 @@ def parse_and_plot_log(log_file_path):
         ax_score.grid(True, linestyle='--', alpha=0.6)
 
     plt.tight_layout()
-    plt.savefig('kfold_training_curves.png', dpi=300, bbox_inches='tight')
-    print("✅ 画图完成！已保存为 kfold_training_curves.png")
+    plt.savefig(save_img_path, dpi=300, bbox_inches='tight')
+    print(f"✅ 画图完成！已保存为 {save_img_path}")
 
 # 运行
 if __name__ == "__main__":
-    parse_and_plot_log('/data2/mengzibing/Amedicine/PathNEPA/output_RCC2/RCC2_cv.log')
+    # 这里你传入什么 log，就自动生成什么 .png
+    parse_and_plot_log('/data2/mengzibing/Amedicine/PathNEPA/output_NSCLC/NSCLC_cv.log')

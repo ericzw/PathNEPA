@@ -5,7 +5,7 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=2           # 指定使用的 GPU 卡号
+export CUDA_VISIBLE_DEVICES=0           # 指定使用的 GPU 卡号
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
@@ -22,17 +22,17 @@ LOG_FILE="${OUTPUT_DIR}/${DATASET_NAME}_cv.log"
 # 🧠 第三部分：模型与特征配置
 # ==========================================
 PRETRAINED_WEIGHTS="SixAILab/nepa-base-patch14-224" # ⚠️ 聚合网络是随机初始化的，这个参数目前仅作占位符防报错
-NUM_CLASSES=2                            # 下游亚型分类的类别数
+NUM_CLASSES=3                            # 下游亚型分类的类别数
 
 # ==========================================
 # 🚀 第四部分：核心训练超参数 (Downstream MIL Aggregation)
 # ==========================================
-EPOCHS=30                                # MIL 通常需要稍微多一点 Epoch (建议 30-50)
+EPOCHS=50                                # MIL 通常需要稍微多一点 Epoch (建议 30-50)
 BATCH_SIZE=1                             # ⚠️ 训练 Batch Size 强锁 1，防止动态序列导致 OOM
 EVAL_BATCH_SIZE=1                        # ⚠️ 验证 Batch Size 强锁 1，防止评测时 Padding 导致维度崩溃
 GRAD_ACCUM_STEPS=16                      # 💡 梯度累加：逻辑 Batch Size = 1 * 16 = 16，保证收敛极其稳定
-LEARNING_RATE=0.0002                     # 下游聚合网络是从头训练的，LR 设为 2e-4 比较合适
-WEIGHT_DECAY=0.05                        # 权重衰减，防止小样本医学数据过拟合
+LEARNING_RATE=0.0001                     # 下游聚合网络是从头训练的，LR 设为 2e-4 比较合适
+WEIGHT_DECAY=0.00001                        # 权重衰减，防止小样本医学数据过拟合
 MAX_GRAD_NORM=1.0                        # 💡 极其重要：序列长达上万，极易梯度爆炸，必须强制裁剪梯度
 USE_BF16="True"                          # 是否使用 BF16 半精度 
 SEED=42                                  # 随机种子，确保 5-fold 划分可复现

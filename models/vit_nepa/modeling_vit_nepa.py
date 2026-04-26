@@ -687,7 +687,9 @@ class ViTNepaForImageClassification(ViTNepaPreTrainedModel):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.vit_nepa = ViTNepaModel(config)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
+        self.classifier = ABMILHead(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
+        # self.classifier = nn.Linear(config.hidden_size, config.num_labels) if config.num_labels > 0 else nn.Identity()
+
         self.post_init()
 
     @can_return_tuple
@@ -807,5 +809,21 @@ class ViTNepaForPreTraining(ViTNepaPreTrainedModel):
             "prediction": prediction,
             "hidden_states": outputs.hidden_states,
         }
+class ABMILHead(nn.Module):
+    def __init__(self, input_dim, num_classes):
+        super().__init__()
+        self.attention = nn.Sequential(
+            nn.Linear(input_dim, input_dim),
+            nn.Tanh(),
+            nn.Linear(input_dim, 1)
+        )
+        self.classifier = nn.Linear(input_dim, num_classes)
 
-__all__ = ["ViTNepaForImageClassification", "ViTNepaModel", "ViTNepaPreTrainedModel", "ViTNepaForPreTraining"]
+    def forward(self, x):
+        # x: [B, N, D]
+        attn_weights = self.attention(x)
+        attn_weights = torch.softmax(attn_weights, dim=1)
+        bag_feat = (x * attn_weights).sum(dim=1)
+        return self.classifier(bag_feat)
+
+__all__ = ["ViTNepaForImageClassification", "ViTNepaModel", "ViTNepaPreTrainedModel", "ViTNepaForPreTraining","ABMILHead"]
