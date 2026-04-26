@@ -18,33 +18,12 @@ from transformers import (
 
 # 导入你自定义的类
 from models.dataset import FastOfflineMILDataset
-from models.downstream_mil import CleanDownstreamMIL
+from models.vit_nepa.configuration_vit_nepa import ViTNepaConfig
+from models.vit_nepa.modeling_vit_nepa import ViTNepaForSubtypingClassification
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ========== ABMIL 分类头（直接插入） ==========
-class ABMILHead(nn.Module):
-    def __init__(self, input_dim, num_classes):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.Tanh(),
-            nn.Linear(input_dim, 1)
-        )
-        self.classifier = nn.Linear(input_dim, num_classes)
-
-    def forward(self, x):
-        # x: [B, N, D]  (batch, patches, dim)
-        attn_weights = self.attention(x)  # [B, N, 1]
-        attn_weights = torch.softmax(attn_weights, dim=1)
-        
-        # 加权聚合
-        feat_agg = (x * attn_weights).sum(dim=1)  # [B, D]
-        
-        # 分类
-        logits = self.classifier(feat_agg)
-        return logits
 # ==========================================
 # 1. 定义参数类 (Model & Data Arguments)
 # ==========================================
@@ -297,12 +276,16 @@ def main():
         )
         
         # 2. 实例化我们新写的聚合模型
-        model = CleanDownstreamMIL(
-            hidden_size=1536, 
-            num_classes=model_args.num_classes,
-            num_layers=2,  # 2层就足够了，多了容易过拟合
-            num_heads=12
+        config = ViTNepaConfig(
+            input_feat_dim=1536,
+            hidden_size=1536,
+            num_hidden_layers=2,
+            num_attention_heads=12,
+            intermediate_size=1536 * 4,
+            num_labels=model_args.num_classes,
         )
+
+        model = ViTNepaForSubtypingClassification(config)
         
         # 修改当前 Fold 的专属输出路径
         training_args.output_dir = os.path.join(base_output_dir, f"fold_{fold + 1}")

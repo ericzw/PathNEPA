@@ -809,21 +809,137 @@ class ViTNepaForPreTraining(ViTNepaPreTrainedModel):
             "prediction": prediction,
             "hidden_states": outputs.hidden_states,
         }
+
+
+# Subtyping 
 class ABMILHead(nn.Module):
-    def __init__(self, input_dim, num_classes):
+    def __init__(self, input_dim, num_classes, attention_dim=256, dropout=0.25):
         super().__init__()
+
         self.attention = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
+            nn.Linear(input_dim, attention_dim),
             nn.Tanh(),
-            nn.Linear(input_dim, 1)
+            nn.Dropout(dropout),
+            nn.Linear(attention_dim, 1),
         )
+
         self.classifier = nn.Linear(input_dim, num_classes)
 
-    def forward(self, x):
-        # x: [B, N, D]
-        attn_weights = self.attention(x)
-        attn_weights = torch.softmax(attn_weights, dim=1)
-        bag_feat = (x * attn_weights).sum(dim=1)
-        return self.classifier(bag_feat)
+    def forward(self, x, attention_mask=None):
+        """
+        x: [B, N, D]
+        attention_mask: [B, N], 1 表示有效 patch，0 表示 padding
+        """
+        attn_logits = self.attention(x).squeeze(-1)  # [B, N]
 
-__all__ = ["ViTNepaForImageClassification", "ViTNepaModel", "ViTNepaPreTrainedModel", "ViTNepaForPreTraining","ABMILHead"]
+        if attention_mask is not None:
+            attn_logits = attn_logits.masked_fill(attention_mask == 0, -1e9)
+
+        attn_weights = torch.softmax(attn_logits, dim=1)  # [B, N]
+
+        bag_feat = torch.sum(x * attn_weights.unsqueeze(-1), dim=1)  # [B, D]
+
+        logits = self.classifier(bag_feat)
+
+        return logits, attn_weights, bag_feat
+
+
+class ViTNepaForSubtypingClassification(ViTNepaPreTrainedModel):
+    """
+    PathNEPA / ViT-NEPA + ABMIL for WSI subtyping classification.
+
+    输入:
+        input_features: [B, N, input_feat_dim]
+
+    流程:
+        input_features
+            -> ViTNepaModel
+            -> patch tokens
+            -> ABMIL pooling
+            -> classifier
+    """
+
+    def __init__(self, config: ViTNepaConfig):
+        super().__init__(config)
+
+        self.num_labels = config.num_labels
+        self.vit_nepa = ViTNepaModel(config)
+
+        self.abmil_head = ABMILHead(
+            input_dim=config.hidden_size,
+            num_classes=config.num_labels,
+            attention_dim=getattr(config, "abmil_attention_dim", 256),
+            dropout=getattr(config, "abmil_dropout", 0.25),
+        )
+
+        self.post_init()
+
+    @can_return_tuple
+    def forward(
+        self,
+        pixel_values: Optional[torch.Tensor] = None,
+        input_features: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        head_mask: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        labels: Optional[torch.Tensor] = None,
+        interpolate_pos_encoding: Optional[bool] = None,
+        **kwargs,
+    ) -> ImageClassifierOutput:
+
+        outputs = self.vit_nepa(
+            pixel_values=pixel_values,
+            input_features=input_features,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            interpolate_pos_encoding=interpolate_pos_encoding,
+            **kwargs,
+        )
+
+        sequence_output = outputs.last_hidden_state  # [B, 1 + N, D]
+
+        # 去掉 CLS token，只保留 patch tokens 给 ABMIL
+        patch_tokens = sequence_output[:, 1:, :]  # [B, N, D]
+
+        logits, attn_weights, bag_feat = self.abmil_head(
+            patch_tokens,
+            attention_mask=attention_mask,
+        )
+
+        loss = None
+        if labels is not None:
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and labels.dtype in (torch.long, torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = nn.MSELoss()
+                loss = loss_fct(logits.squeeze(), labels.squeeze())
+
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = nn.CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = nn.BCEWithLogitsLoss()
+                loss = loss_fct(logits, labels)
+
+        return ImageClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+__all__ = [
+    "ViTNepaForImageClassification",
+    "ViTNepaForSubtypingClassification",
+    "ViTNepaModel",
+    "ViTNepaPreTrainedModel",
+    "ViTNepaForPreTraining",
+    "ABMILHead",
+]

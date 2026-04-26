@@ -5,7 +5,7 @@
 # ==========================================
 export HF_ENDPOINT=https://hf-mirror.com
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-export CUDA_VISIBLE_DEVICES=0           # 指定使用的 GPU 卡号
+export CUDA_VISIBLE_DEVICES=6           # 指定使用的 GPU 卡号
 
 # ==========================================
 # 📂 第二部分：路径与目录配置
@@ -27,7 +27,7 @@ NUM_CLASSES=3                            # 下游亚型分类的类别数
 # ==========================================
 # 🚀 第四部分：核心训练超参数 (Downstream MIL Aggregation)
 # ==========================================
-EPOCHS=50                                # MIL 通常需要稍微多一点 Epoch (建议 30-50)
+EPOCHS=30                                # MIL 通常需要稍微多一点 Epoch (建议 30-50)
 BATCH_SIZE=1                             # ⚠️ 训练 Batch Size 强锁 1，防止动态序列导致 OOM
 EVAL_BATCH_SIZE=1                        # ⚠️ 验证 Batch Size 强锁 1，防止评测时 Padding 导致维度崩溃
 GRAD_ACCUM_STEPS=16                      # 💡 梯度累加：逻辑 Batch Size = 1 * 16 = 16，保证收敛极其稳定
